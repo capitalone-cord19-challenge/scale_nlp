@@ -19,36 +19,36 @@ class RankingFeature:
         self.dim = dim
         self.dsi = dsi
 
-def pad_sequence(qt, pt, tokenizer, max_seq):
-    """
-
-    :param qt: query tokens
-    :param pt: position tokens
-    :param tokenizer: function that tokenizes text
-    :param max_seq: max sequence length of input
-    :return: list of ids , mask and segments
-    """
-    tokens = ["[CLS]"]
-    for token in qt:
+def pad_sequence(q_tokens, p_tokens, tokenizer, max_seq_length):
+    tokens = []
+    segment_ids = []
+    tokens.append("[CLS]")
+    segment_ids.append(0)
+    for token in q_tokens:
         tokens.append(token)
-    q_ids = [0] * len(qt)
-
-    for tokens in pt:
+        segment_ids.append(0)
+    tokens.append("[SEP]")
+    segment_ids.append(0)
+    for token in p_tokens:
         tokens.append(token)
-    s_ids = [1] * len(pt)
-    segment_ids = q_ids + s_ids
+        segment_ids.append(1)
+    tokens.append("[SEP]")
+    segment_ids.append(1)
 
     input_ids = tokenizer.convert_tokens_to_ids(tokens)
     input_mask = [1] * len(input_ids)
-
-    while len(input_ids) < max_seq:
+    while len(input_ids) < max_seq_length:
         input_ids.append(0)
         input_mask.append(0)
         segment_ids.append(0)
 
+    assert len(input_ids) == max_seq_length
+    assert len(input_mask) == max_seq_length
+    assert len(segment_ids) == max_seq_length
+
     return input_ids, input_mask, segment_ids
 
-def create_ranking_feature(query, document, qid, did, tokenizer, max_seq, max_query, stride):
+def create_ranking_feature(query_tokens, document, qid, did, tokenizer, max_seq, max_query, stride):
     """
 
     :param query: query text
@@ -60,7 +60,7 @@ def create_ranking_feature(query, document, qid, did, tokenizer, max_seq, max_qu
     :param max_query: max query length
     :return: RankingFeature
     """
-    query_tokens = tokenizer.tokenize(query)[:max_query]
+    query_tokens = query_tokens[:max_query]
 
     max_document = max_seq - len(query_tokens) - 3
     document_tokens = tokenizer.tokenize(document)
@@ -81,7 +81,7 @@ def create_ranking_feature(query, document, qid, did, tokenizer, max_seq, max_qu
     features = []
     for (span_index, span) in spans:
         doc_tokens = document_tokens[span.start:span.start + span.length]
-        dii, dim, dsi = pad_sequence(query_tokens, document_tokens, tokenizer, max_seq)
+        dii, dim, dsi = pad_sequence(query_tokens, doc_tokens, tokenizer, max_seq)
 
         feature_space = RankingFeature(
             qid = qid,

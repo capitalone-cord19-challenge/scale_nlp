@@ -4,13 +4,13 @@ import numpy as np
 import json
 import torch
 
-from transformers import BertTokenizer, BertConfig
+from transformers import BertTokenizer, BertConfig, BertModel, BertPreTrainedModel
 
 from pyserini.search import pysearch
 
 from collections import namedtuple
 
-from src.ranking_model import  create_ranking_feature
+from src.ranking_model import  create_ranking_feature, BertRankingModel
 from src.loaders import  rankingloader
 
 QUESTIONS = ["who", "what", "where", "why", "why", "is", "are", "whose", "does", "do", "can", "could", "would", "should",
@@ -27,19 +27,13 @@ class ScaleNLP(object):
         self.max_query = opt.max_query
         self.stride = opt.stride
         self.ranking_batchsize = opt.ranking_batchsize
-        self.qa_batchsize = opt.qa_batchsize
-        self.candidates = opt.ann
-        self.ann = opt.ann
         self.index = opt.index
 
         self.tokenizer = BertTokenizer.from_pretrained(opt.qa_path, do_lower_case = opt.lower)
 
-        self.qa_model_config = BertConfig.from_pretrained(opt.qa_path)
-        self.qa_model = BertConfig.from_pretrained(opt.qa_path,self.qa_model_config)
-        self.qa_model.to(opt.device)
 
         self.rank_model_config = BertConfig.from_pretrained(opt.rank_path)
-        self.rank_model = BertConfig.from_pretrained(opt.rank_path, self.rank_model_config)
+        self.rank_model = BertRankingModel.from_pretrained(opt.rank_path, config=self.rank_model_config)
         self.rank_model.to(opt.device)
 
         self.device = opt.device
@@ -50,7 +44,7 @@ class ScaleNLP(object):
 
     def query_processor(self, query):
 
-        searcher = pysearch.search(self.index)
+        searcher = pysearch.SimpleSearcher(self.index)
         results = searcher.search(query, self.number_docs)
         documents = []
         history = set()
@@ -77,7 +71,7 @@ class ScaleNLP(object):
         query_idx = 0
         query_tokens = self.tokenizer.tokenize(query)
         for (doc_idx, doc) in enumerate(documents):
-            ranking_features.extend(create_ranking_feature(query_tokens, documents['text'], query_idx, doc_idx,
+            ranking_features.extend(create_ranking_feature(query_tokens, doc['text'], query_idx, doc_idx,
                                                            self.tokenizer, self.max_sequence, self.max_query,
                                                            self.stride))
 
@@ -87,13 +81,13 @@ class ScaleNLP(object):
 
         ranking_results = []
 
-        for _, batch in enumerate(ranking_data):
+        for g, batch in enumerate(ranking_data):
             self.rank_model.eval()
             query_idx, doc_idx = batch[:2]
             batch = tuple(t.to(self.device) for t in batch[2:])
             (dii, dim, dsi) = batch
             with torch.no_grad():
-                scores = self.rank_model(dii, dim, dsi)
+                scores, _ = self.rank_model(dii, dim, dsi)
             doc_scores = to_list(scores)
 
             for (did, score) in zip(doc_idx, doc_scores):

@@ -1,9 +1,3 @@
-class Example(object):
-    def __init__(self, query_id, query, paragraph):
-        self.query_id = query_id
-        self.query = query
-        self.paragraph = paragraph
-
 
 class InputFeatures(object):
     """
@@ -18,7 +12,6 @@ class InputFeatures(object):
         self.segment_ids = segment_ids
 
 
-x
 
 
 def convert_examples_to_features(examples, tokenizer, max_seq_length, max_query_length, n_paragraph=10,

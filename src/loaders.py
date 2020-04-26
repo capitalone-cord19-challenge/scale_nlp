@@ -4,25 +4,16 @@ import torch
 def rankingloader(features, batchsize):
 
     num_samples = len(features)
-    idx = np.arrange(num_samples)
+    idx = np.arange(num_samples)
 
     for start in range(0, num_samples, batchsize):
-        idxer = idx[start:start+batchsize]
-        qid = []
-        did = []
-        dii = []
-        dim = []
-        dsi = []
-        for i in range(idxer):
-            qid.append(features[i].qid)
-            did.append(features[i].did)
-            dii.append(features[i].dii)
-            dim.append(features[i].dim)
-            dsi.append(features[i].dsi)
-        dii = torch.tensor(dii, dtype=torch.long)
-        dim = torch.tensor(dim, dtype=torch.long)
-        dsi = torch.tensor(dsi, dtype=torch.lang)
+        batches = idx[start:start + batchsize]
 
+        qid = [features[i].qid for i in batches]
+        did = [features[i].did for i in batches]
+        dii = torch.tensor([features[i].dii for i in batches], dtype=torch.long)
+        dim = torch.tensor([features[i].dim for i in batches], dtype=torch.long)
+        dsi = torch.tensor([features[i].dsi for i in batches], dtype=torch.long)
         batch = (qid, did, dii, dim, dsi)
         yield batch
     return
