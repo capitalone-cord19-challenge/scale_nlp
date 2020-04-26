@@ -1,0 +1,5 @@
+torch
+tensorflow
+tensorflow-hub
+transformers
+pyserini
