@@ -20,6 +20,15 @@ class RankingFeature:
         self.dsi = dsi
 
 def pad_sequence(q_tokens, p_tokens, tokenizer, max_seq_length):
+    """
+
+    :param q_tokens: query that has already been tokenized
+    :param p_tokens: position that has already been tokenized
+    :param tokenizer: what we use to tokenize stuff
+    :param max_seq_length: how long a sequence can be
+    :return: input text as ints, masking, and segment
+    """
+    ##Add CLS Tag to tokens
     tokens = []
     segment_ids = []
     tokens.append("[CLS]")
@@ -27,31 +36,34 @@ def pad_sequence(q_tokens, p_tokens, tokenizer, max_seq_length):
     for token in q_tokens:
         tokens.append(token)
         segment_ids.append(0)
+    #ADDING SEP TAG TO TOKENS
     tokens.append("[SEP]")
     segment_ids.append(0)
+    #ADDING POSITION TOKENs
     for token in p_tokens:
         tokens.append(token)
         segment_ids.append(1)
     tokens.append("[SEP]")
     segment_ids.append(1)
 
+    #Convert tokens to index
     input_ids = tokenizer.convert_tokens_to_ids(tokens)
     input_mask = [1] * len(input_ids)
+
+    #Pad until max length
     while len(input_ids) < max_seq_length:
         input_ids.append(0)
         input_mask.append(0)
         segment_ids.append(0)
 
-    assert len(input_ids) == max_seq_length
-    assert len(input_mask) == max_seq_length
-    assert len(segment_ids) == max_seq_length
+
 
     return input_ids, input_mask, segment_ids
 
 def create_ranking_feature(query_tokens, document, qid, did, tokenizer, max_seq, max_query, stride):
     """
 
-    :param query: query text
+    :param query_tokens: already tokenize query
     :param document: document text
     :param qid: query id
     :param did: document id
@@ -62,12 +74,15 @@ def create_ranking_feature(query_tokens, document, qid, did, tokenizer, max_seq,
     """
     query_tokens = query_tokens[:max_query]
 
+    #need to account for CLS and SEPS
     max_document = max_seq - len(query_tokens) - 3
     document_tokens = tokenizer.tokenize(document)
 
     document_span = namedtuple('span', ["start", "length"])
     spans = []
     offset = 0
+
+    #break document into bite size tasty documents
     while offset < len(document_tokens):
         length = len(document_tokens) - offset
         if length > max_document:
@@ -79,6 +94,7 @@ def create_ranking_feature(query_tokens, document, qid, did, tokenizer, max_seq,
         offset += min(length, stride)
 
     features = []
+    ##Pad reach bite size documents and transform into a ranking  set
     for (span_index, span) in spans:
         doc_tokens = document_tokens[span.start:span.start + span.length]
         dii, dim, dsi = pad_sequence(query_tokens, doc_tokens, tokenizer, max_seq)
