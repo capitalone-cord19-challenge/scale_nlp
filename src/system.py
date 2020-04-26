@@ -27,7 +27,7 @@ class ScaleNLP(object):
         self.ranking_batchsize = opt.ranking_batchsize
         self.index = opt.index
 
-        self.tokenizer = BertTokenizer.from_pretrained(opt.qa_path, do_lower_case = opt.lower)
+        self.tokenizer = BertTokenizer.from_pretrained(opt.rank_path, do_lower_case = opt.lower)
 
 
         self.rank_model_config = BertConfig.from_pretrained(opt.rank_path)

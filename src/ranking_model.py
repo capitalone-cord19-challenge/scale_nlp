@@ -95,7 +95,7 @@ def create_ranking_feature(query_tokens, document, qid, did, tokenizer, max_seq,
 
     features = []
     ##Pad reach bite size documents and transform into a ranking  set
-    for (span_index, span) in spans:
+    for (span_index, span) in enumerate(spans):
         doc_tokens = document_tokens[span.start:span.start + span.length]
         dii, dim, dsi = pad_sequence(query_tokens, doc_tokens, tokenizer, max_seq)
 
