@@ -10,6 +10,9 @@ from transformers import BertConfig, BertTokenizer, BertModel, BertPreTrainedMod
 
 
 class ExampleQA(object):
+    """
+    Generic Example Holder
+    """
 
     def __init__(self,
                  qid,
@@ -21,7 +24,9 @@ class ExampleQA(object):
 
 
 class InputFeatures(object):
-    """A single set of features of data."""
+    """
+    Generic Input for single row
+    """
 
     def __init__(self,
                  qid,
@@ -36,7 +41,7 @@ class InputFeatures(object):
         self.segment_ids = segment_ids
 
 
-def create_qa_features(examples, tokenizer, max_seq_length,
+def create_qa_features(examples, tokenizer, max_sequence,
                                  max_query,
                                  num_paragraphs=10,
                                  cls_token_at_end=False,
@@ -45,13 +50,32 @@ def create_qa_features(examples, tokenizer, max_seq_length,
                                  cls_token_segment_id=0, pad_token_segment_id=0,
                                  mask_padding_with_zero=True,
                                  sequence_a_is_doc=False):
+    """
+    
+    :param examples: List of QAExamples
+    :param tokenizer: tokenizer from your model
+    :param max_sequence: maximum length of sequence
+    :param max_query: maximum length of query
+    :param num_paragraphs: number of paragraphs
+    :param cls_token_at_end: cls token at end of sequence
+    :param cls_token: special char for cls token
+    :param sep_token: special char for spe token
+    :param pad_token: special char for pad token
+    :param sequence_a_segment_id: id for sequence a usually 0
+    :param sequence_b_segment_id: id for squence b usually 1
+    :param cls_token_segment_id: token for cls usually 0
+    :param pad_token_segment_id: token for pad usually 0
+    :param mask_padding_with_zero: padding defaults as 0 but if no padding can be 1
+    :param sequence_a_is_doc: is input a long form document?
+    :return: 
+    """
     features = []
     for (example_index, example) in enumerate(examples):
         query_tokens = tokenizer.tokenize(example.query)
 
         query_tokens = query_tokens[:max_query]
 
-        max_document = max_seq_length - len(query_tokens) - 3
+        max_document = max_sequence - len(query_tokens) - 3
 
         tokens_list = []
         input_ids_list = []
@@ -67,20 +91,20 @@ def create_qa_features(examples, tokenizer, max_seq_length,
 
             pos_mask = []
 
-            # CLS token at the beginning
+            #  add cls at beginning 
             if not cls_token_at_end:
                 tokens.append(cls_token)
                 segment_ids.append(cls_token_segment_id)
                 pos_mask.append(0)
 
-
+            # check if query
             if not sequence_a_is_doc:
-                # Query
+
                 tokens += query_tokens
                 segment_ids += [sequence_a_segment_id] * len(query_tokens)
                 pos_mask += [1] * len(query_tokens)
 
-                # SEP token
+            
                 tokens.append(sep_token)
                 segment_ids.append(sequence_a_segment_id)
                 pos_mask.append(1)
@@ -97,7 +121,7 @@ def create_qa_features(examples, tokenizer, max_seq_length,
                 pos_mask.append(0)
 
             if sequence_a_is_doc:
-                # SEP token
+
                 tokens.append(sep_token)
                 segment_ids.append(sequence_a_segment_id)
                 pos_mask.append(1)
@@ -106,12 +130,10 @@ def create_qa_features(examples, tokenizer, max_seq_length,
                 segment_ids += [sequence_b_segment_id] * len(query_tokens)
                 pos_mask += [1] * len(query_tokens)
 
-            # SEP token
             tokens.append(sep_token)
             segment_ids.append(sequence_b_segment_id)
             pos_mask.append(1)
 
-            # CLS token at the end
             if cls_token_at_end:
                 tokens.append(cls_token)
                 segment_ids.append(cls_token_segment_id)
@@ -119,12 +141,11 @@ def create_qa_features(examples, tokenizer, max_seq_length,
 
             input_ids = tokenizer.convert_tokens_to_ids(tokens)
 
-            # The mask has 1 for real tokens and 0 for padding tokens. Only real
-            # tokens are attended to.
+
             input_mask = [1 if mask_padding_with_zero else 0] * len(input_ids)
 
-            # Zero-pad up to the sequence length.
-            while len(input_ids) < max_seq_length:
+
+            while len(input_ids) < max_sequence:
                 input_ids.append(pad_token)
                 input_mask.append(0 if mask_padding_with_zero else 1)
                 segment_ids.append(pad_token_segment_id)
@@ -181,20 +202,29 @@ class BertQAModel(BertPreTrainedModel):
         return outputs
 
 
-def best_indexes(logits, n_best_size):
-    """Get the n-best logits from a list."""
+def best_indexes(logits, num_best):
+    """
+    
+    :param logits: logits from models
+    :param num_best: how many do you want
+    :return: 
+    """
     indexscore = sorted(enumerate(logits), key=lambda x: x[1], reverse=True)
 
     indexes = []
     for i in range(len(indexscore)):
-        if i >= n_best_size:
+        if i >= num_best:
             break
         indexes.append(indexscore[i][0])
     return indexes
 
 
 def softmax(scores):
-    """Compute softmax probability over raw logits."""
+    """
+    
+    :param scores: list of scores
+    :return: 
+    """
     if not scores:
         return []
 
@@ -216,27 +246,38 @@ def softmax(scores):
     return probs
 
 
-def find_best_prediction(feature, start_logits, end_logits, n_best_size, max_seq_length, max_answer_length):
+def find_best_prediction(feature, start_logits, end_logits, num_best, max_sequence, max_answer):
+    """
+
+    :param feature: feature class
+    :param start_logits: probability where start is
+    :param end_logits:  probability where end is
+    :param num_best: how many do we want
+    :param max_sequence: how long is the squence
+    :param max_answer: how long is the answer
+    :return:
+    """
     initial = collections.namedtuple(
         "initial",
         ["start_index", "end_index", "start_logit", "end_logit"])
 
     initial_predictions = []
-    start_indexes = best_indexes(start_logits, n_best_size)
-    end_indexes = best_indexes(end_logits, n_best_size)
+    start_indexes = best_indexes(start_logits, num_best)
+    end_indexes = best_indexes(end_logits, num_best)
+    ##Error handlers
     for start_index in start_indexes:
         for end_index in end_indexes:
 
-            if start_index >= len(feature.tokens) * max_seq_length:
+            if start_index >= len(feature.tokens) * max_sequence:
                 continue
-            if end_index >= len(feature.tokens) * max_seq_length:
+            if end_index >= len(feature.tokens) * max_sequence:
                 continue
-            if start_index // max_seq_length != end_index // max_seq_length:
+            if start_index // max_sequence != end_index // max_sequence:
                 continue
             if end_index < start_index:
                 continue
             length = end_index - start_index + 1
-            if length > max_answer_length:
+            if length > max_answer:
                 continue
             initial_predictions.append(
                 initial(
@@ -255,12 +296,12 @@ def find_best_prediction(feature, start_logits, end_logits, n_best_size, max_seq
     history = set()
     top = []
     for pred in prelim_predictions:
-        if len(top) >= n_best_size:
+        if len(top) >= num_best:
             break
         if pred.start_index > 0:  # this is a non-null prediction
-            paragraph_index = pred.start_index // max_seq_length
-            start_index = pred.start_index % max_seq_length
-            end_index = pred.end_index % max_seq_length
+            paragraph_index = pred.start_index // max_sequence
+            start_index = pred.start_index % max_sequence
+            end_index = pred.end_index % max_sequence
             _tokens = feature.tokens[paragraph_index][start_index:(end_index + 1)]
             _text = " ".join(_tokens).replace(" ##", "").replace("##", "").strip()
 

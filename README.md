@@ -1,10 +1,12 @@
 # SCALE_NLP REPO
 
-Install the requirements
-Make sure you have some pretrained models somewhere
+# Getting Started
 
-create an index using anserini of covid dataset
-
+### Download Data
+Use download.sh script to download CORD-19 dataset.
+### Create Index
+Install [Anserini](https://github.com/castorini/anserini) 
+###Run it!
 python runner.py
 
-Change arguments as needed
+:)
