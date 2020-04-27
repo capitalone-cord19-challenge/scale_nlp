@@ -11,7 +11,7 @@ from pyserini.search import pysearch
 from collections import namedtuple
 
 from src.ranking_model import  create_ranking_feature, BertRankingModel
-from src.qa_model import BertQAModel, ExampleQA, create_qa_features, find_best_predictions
+from src.qa_model import BertQAModel, ExampleQA, create_qa_features, find_best_prediction
 from src.loaders import  rankingloader
 from src.utils import tensor_to_list
 
@@ -150,8 +150,8 @@ class ScaleNLP(object):
             index_paragraphs.append(ranking_results[idx].doc_idx)
 
         examples = ExampleQA(self.query_idx, query, paragraphs)
-        features = create_qa_features(examples=[examples], tokenizer=self.tokenizer, max_seq=self.max_sequence,
-                                      max_query=self.max_query)
+        features = create_qa_features(examples=[examples], tokenizer=self.tokenizer, max_seq_length=self.max_sequence,
+                                      max_query_length=self.max_query)
         feature = features[0]
         self.qa_model.eval()
         input_ids = torch.tensor([feature.input_ids], dtype=torch.long).to(self.device)
@@ -166,18 +166,18 @@ class ScaleNLP(object):
             start = start.view(self.qa_batchsize, self.number_paragraphs*self.max_sequence)
             end = end.view(self.qa_batchsize, self.number_paragraphs*self.max_sequence)
 
-            starting_list = tensor_to_list(start[0])
-            ending_list = tensor_to_list(end[0])
+        starting_list = tensor_to_list(start[0])
+        ending_list = tensor_to_list(end[0])
 
-            best_prediction = find_best_predictions(feature, starting_list, ending_list, self.top, self.max_sequence,
-                                                    self.max_answer)
-            for prediction in best_prediction:
-                if prediction['doc_id'] != -1:
-                    doc_idx = index_paragraphs[prediction['dox_id']]
-                    prediction["title"]
-                else:
-                    prediction["title"] = ""
-                prediction['doc_id'] = None
+        best_prediction = find_best_prediction(feature, starting_list, ending_list, self.top, self.max_sequence,
+                                                self.max_answer)
+        for prediction in best_prediction:
+            if prediction['doc_id'] != -1:
+                doc_idx = index_paragraphs[prediction['dox_id']]
+                prediction["title"] = documents[doc_idx]["title"]
+            else:
+                prediction["title"] = ""
+            prediction['doc_id'] = None
 
             results = best_prediction
             return results

@@ -1,209 +1,304 @@
+import argparse
+import collections
+import json
 import math
-from transformers import BertConfig, BertModel, BertPretrainedModel
-from torch import nn
+import os
+import torch
 
-from collections import namedtuple, OrderedDict
-
-def softmax(scores):
-    if not scores
-        return []
-    best_score = None
-    for score in scores:
-        if best_score is None or score > best_score:
-            best_score = score
-
-    exps = []
-    sum = 0.0
-    for score in scores:
-        diff = math.exp(score - best_score)
-        exps.append(diff)
-        sum += diff
-    prob = []
-    for score in exps:
-        prob.append(score/sum)
-    return prob
-
-def find_best(logits, top_n):
-    index_score = sorted(enumerate(logits), keys=lambda x: x[1], reverse=True)
-    best = []
-    for i in range(len(index_score)):
-        if i >= top_n:
-            break
-        best.append(index_score)
-    return best
-
-def find_best_predictions(feature, starts, ends, top_n, max_seq, max_answer):
-    initial = namedtuple("initial", ["start", "end", "start_l", "end_l"])
-
-    initial_guesses = []
-    starting = find_best(starts, top_n)
-    ending = find_best(ends, top_n)
-
-    for start in starting:
-        for end in ending:
-            if (start >= len(feature.token) * max_seq) or (end >= len(feature.token) * max_seq):
-                continue
-            if (start // max_seq != end //max_answer) or (end < start):
-                continue
-            length = end - start + 1
-            if length > max_answer:
-                continue
-            initial_guesses.append(initial(start=start, end=end, start_l = starts[start], end_l=ends[end]))
-
-    initial_guesses = sorted(initial_guesses, key=lambda x: (x.start_l + x.end_l),
-                             reverse=True)
-    best_guesses = namedtuple("best_guesses", ["text", "paragraph_index", "start_logit", "end_logit"])
-
-    predicted = set()
-    top = []
-
-    for guess in best_guesses:
-        if len(top) >= top_n:
-            break
-        if guess.start >0:
-            paragraph_index = guess.start // max_seq
-            start = guess.start % max_seq
-            end = guess.start % max_seq
-            _tokens = feature.tokens[paragraph_index][start:(end+1)]
-            _text = " ".join(_tokens).replace(" ##", "").replace("##", "").strip()
-            clean_text = " ".join(_text.split()).replace(" [UNK] ", " ")
-            if clean_text in predicted:
-                continue
-            predicted.add(clean_text)
-        else:
-            paragraph_index = -1
-            clean_text= ""
-            predicted.add(clean_text)
-
-        top.append(best_guesses(text=clean_text, paragraph_index=paragraph_index, start_logit=guess.start_l,
-                                end_logit=guess.end_l))
-
-        if not top:
-            top.append(best_guesses(text="", start_logit=0.0, end_logit=0.0))
-
-        scores = []
-        for guess in top:
-            scores.append(guess.start_logit, guess.end_logit)
-        prob = softmax(scores)
-        payloads = []
-        for (idx, guess) in enumerate(top):
-            payload = OrderedDict()
-            payload["text"]  = guess.text
-            payload["doc_id"] = guess.paragraph_index
-            payload["prob"] = prob[idx]
-            payloads.append(payload)
-        return payloads
-
-
-
-
-def create_qa_features(examples, tokenizer, max_seq, max_query, number_paragraphs_for_query):
-    features = []
-    for (idx, example) in enumerate(examples):
-        query_tokens = tokenizer.tokenize(example.query)[:max_query]
-
-        max_document = max_seq - len(query_tokens) - 3
-
-        tokens_lst = []
-        input_ids_lst = []
-        input_mask_lst = []
-        segment_ids_lst = []
-
-        for jdx in range(number_paragraphs_for_query):
-            paragraph = example.paragraph[jdx] if jdx < len(example.paragraph) else ""
-
-            tokens = []
-            segment_ids = []
-            pos_mask = []
-
-            tokens.append("[CLS]")
-            segment_ids.append("[SEP]")
-            pos_mask.append(0)
-            index_cls = 0
-
-            tokens += query_tokens
-            segment_ids += [0] * len(query_tokens)
-            pos_mask += [1] * len(query_tokens)
-
-            tokens.append("[SEP]")
-            segment_ids.append(0)
-            pos_mask.apepnd(1)
-
-            paragraph_tokens = tokenizer.tokenize(paragraph)[:max_document]
-            for i in range(len(paragraph_tokens)):
-                tokens.append(paragraph[i])
-                segment_ids.append(1)
-                pos_mask.append(0)
-
-            tokens.append("[SEP]")
-            segment_ids.append(1)
-            pos_mask.append(1)
-
-            input_ids = tokenizer.convert_tokens_to_ids(tokens)
-
-            input_mask = [1] * len(input_ids)
-            while len(input_ids) < max_seq:
-                input_ids.append(0)
-                input_mask.append(0)
-                segment_ids.append(0)
-                pos_mask.append(1)
-
-                tokens_lst.append(tokens)
-                input_ids_lst.append(input_ids)
-                input_mask_lst.append(input_mask)
-                segment_ids_lst.append(segment_ids)
-
-        features.append(InputFeatures(qid = example.qid,
-                                      tokens = tokens_lst,
-                                      input_ids = input_ids_lst,
-                                      input_mask = input_mask_lst,
-                                      segment_ids = segment_ids_lst
-                                      ))
-
+import torch.nn as nn
+from transformers import BertConfig, BertTokenizer, BertModel, BertPreTrainedModel
 
 
 class ExampleQA(object):
-    def __init__(self, qid, query, paragraph):
+
+    def __init__(self,
+                 qid,
+                 query,
+                 paragraphs):
         self.qid = qid
         self.query = query
-        self.paragraph = paragraph
+        self.paragraphs = paragraphs
+
 
 class InputFeatures(object):
-    def __init__(self, qid, tokens, input_ids, input_mask, segment_mask, segment_ids):
+    """A single set of features of data."""
+
+    def __init__(self,
+                 qid,
+                 tokens,
+                 input_ids,
+                 input_mask,
+                 segment_ids):
         self.qid = qid
         self.tokens = tokens
         self.input_ids = input_ids
         self.input_mask = input_mask
         self.segment_ids = segment_ids
 
-class BertQAModel(BertPretrainedModel):
+
+def create_qa_features(examples, tokenizer, max_seq_length,
+                                 max_query,
+                                 num_paragraphs=10,
+                                 cls_token_at_end=False,
+                                 cls_token='[CLS]', sep_token='[SEP]', pad_token=0,
+                                 sequence_a_segment_id=0, sequence_b_segment_id=1,
+                                 cls_token_segment_id=0, pad_token_segment_id=0,
+                                 mask_padding_with_zero=True,
+                                 sequence_a_is_doc=False):
+    features = []
+    for (example_index, example) in enumerate(examples):
+        query_tokens = tokenizer.tokenize(example.query)
+
+        query_tokens = query_tokens[:max_query]
+
+        max_document = max_seq_length - len(query_tokens) - 3
+
+        tokens_list = []
+        input_ids_list = []
+        input_mask_list = []
+        segment_ids_list = []
+
+        for idx in range(num_paragraphs):
+            paragraph = example.paragraphs[idx] if idx < len(example.paragraphs) else ''
+
+            tokens = []
+            segment_ids = []
+
+
+            pos_mask = []
+
+            # CLS token at the beginning
+            if not cls_token_at_end:
+                tokens.append(cls_token)
+                segment_ids.append(cls_token_segment_id)
+                pos_mask.append(0)
+
+
+            if not sequence_a_is_doc:
+                # Query
+                tokens += query_tokens
+                segment_ids += [sequence_a_segment_id] * len(query_tokens)
+                pos_mask += [1] * len(query_tokens)
+
+                # SEP token
+                tokens.append(sep_token)
+                segment_ids.append(sequence_a_segment_id)
+                pos_mask.append(1)
+
+            paragraph_tokens = tokenizer.tokenize(paragraph)[:max_document]
+
+            # Paragraph
+            for i in range(len(paragraph_tokens)):
+                tokens.append(paragraph_tokens[i])
+                if not sequence_a_is_doc:
+                    segment_ids.append(sequence_b_segment_id)
+                else:
+                    segment_ids.append(sequence_a_segment_id)
+                pos_mask.append(0)
+
+            if sequence_a_is_doc:
+                # SEP token
+                tokens.append(sep_token)
+                segment_ids.append(sequence_a_segment_id)
+                pos_mask.append(1)
+
+                tokens += query_tokens
+                segment_ids += [sequence_b_segment_id] * len(query_tokens)
+                pos_mask += [1] * len(query_tokens)
+
+            # SEP token
+            tokens.append(sep_token)
+            segment_ids.append(sequence_b_segment_id)
+            pos_mask.append(1)
+
+            # CLS token at the end
+            if cls_token_at_end:
+                tokens.append(cls_token)
+                segment_ids.append(cls_token_segment_id)
+                pos_mask.append(0)
+
+            input_ids = tokenizer.convert_tokens_to_ids(tokens)
+
+            # The mask has 1 for real tokens and 0 for padding tokens. Only real
+            # tokens are attended to.
+            input_mask = [1 if mask_padding_with_zero else 0] * len(input_ids)
+
+            # Zero-pad up to the sequence length.
+            while len(input_ids) < max_seq_length:
+                input_ids.append(pad_token)
+                input_mask.append(0 if mask_padding_with_zero else 1)
+                segment_ids.append(pad_token_segment_id)
+                pos_mask.append(1)
+
+
+            tokens_list.append(tokens)
+            input_ids_list.append(input_ids)
+            input_mask_list.append(input_mask)
+            segment_ids_list.append(segment_ids)
+
+        features.append(
+            InputFeatures(
+                qid=example.qid,
+                tokens=tokens_list,
+                input_ids=input_ids_list,
+                input_mask=input_mask_list,
+                segment_ids=segment_ids_list))
+
+    return features
+
+
+class BertQAModel(BertPreTrainedModel):
 
     def __init__(self, config):
         super(BertQAModel, self).__init__(config)
         self.num_labels = config.num_labels
 
         self.bert = BertModel(config)
-        self.outputs = nn.Linear(config.hidden_size, config.num_labels)
-        self.selections = nn.Linear(config.hidden_size, 1)
+        self.qa_outputs = nn.Linear(config.hidden_size, config.num_labels)
+        self.selected_outputs = nn.Linear(config.hidden_size, 1)
 
         self.init_weights()
 
     def forward(self, input_ids, attention_mask=None, token_type_ids=None, position_ids=None, head_mask=None):
+        outputs = self.bert(input_ids,
+                            attention_mask=attention_mask,
+                            token_type_ids=token_type_ids,
+                            position_ids=position_ids,
+                            head_mask=head_mask)
 
-        out = self.bert(input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids, position_ids=position_ids,
-                        head_mask=head_mask)
+        sequence_output = outputs[0]
+        pooled_output = outputs[1]
 
-        sequence = out[0]
-        pool = out[1]
+        logits = self.qa_outputs(sequence_output)
+        start_logits, end_logits = logits.split(1, dim=-1)
+        start_logits = start_logits.squeeze(-1)
+        end_logits = end_logits.squeeze(-1)
 
-        logits = self.outputs(sequence)
-        start, end = logits.split(1, dim=1)
-        start = start.squeeze(-1)
-        end = end.squeeze(-1)
+        selected_logits = self.selected_outputs(pooled_output).squeeze(-1)
 
-        selected = self.selections(pool).squeeze(-1)
+        outputs = (start_logits, end_logits, selected_logits,) + outputs[2:]
 
-        out = (start, end, selected,) + out[2:]
-        return out
+        return outputs
 
 
+def best_indexes(logits, n_best_size):
+    """Get the n-best logits from a list."""
+    indexscore = sorted(enumerate(logits), key=lambda x: x[1], reverse=True)
+
+    indexes = []
+    for i in range(len(indexscore)):
+        if i >= n_best_size:
+            break
+        indexes.append(indexscore[i][0])
+    return indexes
+
+
+def softmax(scores):
+    """Compute softmax probability over raw logits."""
+    if not scores:
+        return []
+
+    max_score = None
+    for score in scores:
+        if max_score is None or score > max_score:
+            max_score = score
+
+    exp_scores = []
+    total_sum = 0.0
+    for score in scores:
+        x = math.exp(score - max_score)
+        exp_scores.append(x)
+        total_sum += x
+
+    probs = []
+    for score in exp_scores:
+        probs.append(score / total_sum)
+    return probs
+
+
+def find_best_prediction(feature, start_logits, end_logits, n_best_size, max_seq_length, max_answer_length):
+    initial = collections.namedtuple(
+        "initial",
+        ["start_index", "end_index", "start_logit", "end_logit"])
+
+    initial_predictions = []
+    start_indexes = best_indexes(start_logits, n_best_size)
+    end_indexes = best_indexes(end_logits, n_best_size)
+    for start_index in start_indexes:
+        for end_index in end_indexes:
+
+            if start_index >= len(feature.tokens) * max_seq_length:
+                continue
+            if end_index >= len(feature.tokens) * max_seq_length:
+                continue
+            if start_index // max_seq_length != end_index // max_seq_length:
+                continue
+            if end_index < start_index:
+                continue
+            length = end_index - start_index + 1
+            if length > max_answer_length:
+                continue
+            initial_predictions.append(
+                initial(
+                    start_index=start_index,
+                    end_index=end_index,
+                    start_logit=start_logits[start_index],
+                    end_logit=end_logits[end_index]))
+    prelim_predictions = sorted(
+        initial_predictions,
+        key=lambda x: (x.start_logit + x.end_logit),
+        reverse=True)
+
+    best_prediction = collections.namedtuple(  # pylint: disable=invalid-name
+        "bestprediction", ["text", "paragraph_index", "start_logit", "end_logit"])
+
+    history = set()
+    top = []
+    for pred in prelim_predictions:
+        if len(top) >= n_best_size:
+            break
+        if pred.start_index > 0:  # this is a non-null prediction
+            paragraph_index = pred.start_index // max_seq_length
+            start_index = pred.start_index % max_seq_length
+            end_index = pred.end_index % max_seq_length
+            _tokens = feature.tokens[paragraph_index][start_index:(end_index + 1)]
+            _text = " ".join(_tokens).replace(" ##", "").replace("##", "").strip()
+
+
+            cleantext = " ".join(_text.split()).replace(" [UNK] ", " ")
+            if cleantext in history:
+                continue
+
+            history.add(cleantext)
+        else:
+            paragraph_index = -1
+            cleantext = ""
+            history.add(cleantext)
+
+        top.append(
+            best_prediction(
+                text=cleantext,
+                paragraph_index=paragraph_index,
+                start_logit=pred.start_logit,
+                end_logit=pred.end_logit))
+
+
+    if not top:
+        top.append(
+            best_prediction(text="", start_logit=0.0, end_logit=0.0))
+
+
+    total_scores = []
+    for entry in top:
+        total_scores.append(entry.start_logit + entry.end_logit)
+    probs = softmax(total_scores)
+
+    payloads = []
+    for (i, entry) in enumerate(top):
+        payload = collections.OrderedDict()
+        payload["text"] = entry.text
+        payload["doc_id"] = entry.paragraph_index
+        payload["probability"] = probs[i]
+        payloads.append(payload)
+
+    return payloads
