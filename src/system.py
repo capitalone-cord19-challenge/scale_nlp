@@ -11,6 +11,7 @@ from pyserini.search import pysearch
 from collections import namedtuple
 
 from src.ranking_model import  create_ranking_feature, BertRankingModel
+from src.qa_model import BertQAModel, ExampleQA, create_qa_features, find_best_predictions
 from src.loaders import  rankingloader
 from src.utils import tensor_to_list
 
@@ -23,16 +24,24 @@ class ScaleNLP(object):
 
         self.max_sequence = opt.max_sequence
         self.max_query = opt.max_query
+        self.max_answer = opt.max_answer
         self.stride = opt.stride
         self.ranking_batchsize = opt.ranking_batchsize
+        self.qa_batchsize = opt.qa_batchsize
+        self.number_paragraphs = opt.number_paragraphs
+        self.top = opt.top
         self.index = opt.index
 
-        self.tokenizer = BertTokenizer.from_pretrained(opt.rank_path, do_lower_case = opt.lower)
+        self.tokenizer = BertTokenizer.from_pretrained(opt.rank_path)
 
 
         self.rank_model_config = BertConfig.from_pretrained(opt.rank_path)
         self.rank_model = BertRankingModel.from_pretrained(opt.rank_path, config=self.rank_model_config)
         self.rank_model.to(opt.device)
+
+        self.qa_model_config = BertConfig.from_pretrained(opt.qa_path)
+        self.qa_model = BertQAModel.from_pretrained(opt.qa_path, config=self.qa_model_config)
+        self.qa.model.to(opt.device)
 
         self.device = opt.device
 
@@ -75,19 +84,26 @@ class ScaleNLP(object):
         return self.processor(query, documents)
 
     def processor(self, query, documents):
+        query_tokens = self.tokenizer.tokenize(query)
+        if self.question_identification(query):
+            ranking_results =  self.ranking_processor(query_tokens, documents)
+            qa_results =self.qa_processor(query, query_tokens, documents, ranking_results)
+            return ranking_results, qa_results
+        return self.ranking_processor(query_tokens, documents)
+
+    def ranking_processor(self, query_tokens, documents):
         """
 
         :param query: original query from user
-        :param documents: set of candidate documents from anserini
+        :param documents: set of c andidate documents from annserini
         :return: ranked documents
         """
         ranking_features = []
 
         #Convert documents and query into ranking feature space
-        query_idx = 0
-        query_tokens = self.tokenizer.tokenize(query)
+        self.query_idx = 0
         for (doc_idx, doc) in enumerate(documents):
-            ranking_features.extend(create_ranking_feature(query_tokens, doc['text'], query_idx, doc_idx,
+            ranking_features.extend(create_ranking_feature(query_tokens, doc['text'], self.query_idx, doc_idx,
                                                            self.tokenizer, self.max_sequence, self.max_query,
                                                            self.stride))
         #Create Generator of batches
@@ -99,7 +115,7 @@ class ScaleNLP(object):
         #batch data into model and rerank result based on score
         for g, batch in enumerate(ranking_data):
             self.rank_model.eval()
-            query_idx, doc_idx = batch[:2]
+            self.query_idx, doc_idx = batch[:2]
             batch = tuple(t.to(self.device) for t in batch[2:])
             (dii, dim, dsi) = batch
             with torch.no_grad():
@@ -123,6 +139,53 @@ class ScaleNLP(object):
                 search_results.append(payload)
 
         return search_results
+
+    def qa_processor(self, query, query_tokens, documents, ranking_results):
+
+        paragraphs = []
+        index_paragraphs = []
+
+        for idx in range(self.number_paragraphs):
+            paragraphs.append(ranking_results[idx].text)
+            index_paragraphs.append(ranking_results[idx].doc_idx)
+
+        examples = ExampleQA(self.query_idx, query, paragraphs)
+        features = create_qa_features(examples=[examples], tokenizer=self.tokenizer, max_seq=self.max_sequence,
+                                      max_query=self.max_query)
+        feature = features[0]
+        self.qa_model.eval()
+        input_ids = torch.tensor([feature.input_ids], dtype=torch.long).to(self.device)
+        input_mask = torch.tensor([feature.input_mask], dtype=torch.long).to(self.device)
+        segment_ids = torch.tensor([feature.segment_ids], dtype=torch.long).to(self.device)
+
+        with torch.no_grad():
+            out = self.qa_model(input_ids=input_ids.view(-1, input_ids.shape[2]),
+                                attention_mask=input_mask.view(-1, input_mask.shape[2]),
+                                token_type_ids=segment_ids.view(-1, segment_ids.shape[2]))
+            start, end = out[0], out[1]
+            start = start.view(self.qa_batchsize, self.number_paragraphs*self.max_sequence)
+            end = end.view(self.qa_batchsize, self.number_paragraphs*self.max_sequence)
+
+            starting_list = tensor_to_list(start[0])
+            ending_list = tensor_to_list(end[0])
+
+            best_prediction = find_best_predictions(feature, starting_list, ending_list, self.top, self.max_sequence,
+                                                    self.max_answer)
+            for prediction in best_prediction:
+                if prediction['doc_id'] != -1:
+                    doc_idx = index_paragraphs[prediction['dox_id']]
+                    prediction["title"]
+                else:
+                    prediction["title"] = ""
+                prediction['doc_id'] = None
+
+            results = best_prediction
+            return results
+
+
+
+
+
 
 
 
