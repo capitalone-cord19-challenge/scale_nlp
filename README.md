@@ -9,3 +9,4 @@ Install [Anserini](https://github.com/castorini/anserini)
 ###Run it!
 python runner.py
 
+:)
