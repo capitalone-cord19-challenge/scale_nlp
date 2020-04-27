@@ -41,7 +41,7 @@ class ScaleNLP(object):
 
         self.qa_model_config = BertConfig.from_pretrained(opt.qa_path)
         self.qa_model = BertQAModel.from_pretrained(opt.qa_path, config=self.qa_model_config)
-        self.qa.model.to(opt.device)
+        self.qa_model.to(opt.device)
 
         self.device = opt.device
 
@@ -86,9 +86,9 @@ class ScaleNLP(object):
     def processor(self, query, documents):
         query_tokens = self.tokenizer.tokenize(query)
         if self.question_identification(query):
-            ranking_results =  self.ranking_processor(query_tokens, documents)
-            qa_results =self.qa_processor(query, query_tokens, documents, ranking_results)
-            return ranking_results, qa_results
+            search_results =  self.ranking_processor(query_tokens, documents)
+            qa_results =self.qa_processor(query_tokens, documents)
+            return search_results, qa_results
         return self.ranking_processor(query_tokens, documents)
 
     def ranking_processor(self, query_tokens, documents):
@@ -111,7 +111,7 @@ class ScaleNLP(object):
 
         rank_dict = namedtuple("rankingresults", ["doc_idx", "title", "text", "score"])
 
-        ranking_results = []
+        self.ranking_results = []
         #batch data into model and rerank result based on score
         for g, batch in enumerate(ranking_data):
             self.rank_model.eval()
@@ -123,16 +123,16 @@ class ScaleNLP(object):
             doc_scores = tensor_to_list(scores)
 
             for (did, score) in zip(doc_idx, doc_scores):
-                ranking_results.append(
+                self.ranking_results.append(
                     rank_dict(doc_idx=did, title=documents[did]['title'], text= documents[did]['text'], score=score)
                 )
 
-        ranking_results = sorted(ranking_results, key=lambda x: x.score, reverse=True)
+        self.ranking_results = sorted(self.ranking_results, key=lambda x: x.score, reverse=True)
 
         #Remove duplicate results from search and assign payload to search results
         search_results = []
         unique_titles = set()
-        for res in ranking_results:
+        for res in self.ranking_results:
             if res.title not in unique_titles:
                 unique_titles.add(res.title)
                 payload = {"title":res.title, "text":res.text, "score":res.score}
@@ -145,13 +145,16 @@ class ScaleNLP(object):
         paragraphs = []
         index_paragraphs = []
 
+        if self.number_paragraphs > len(self.ranking_results):
+            self.number_paragraphs = len(self.ranking_results)
+
         for idx in range(self.number_paragraphs):
-            paragraphs.append(ranking_results[idx].text)
-            index_paragraphs.append(ranking_results[idx].doc_idx)
+            paragraphs.append(self.ranking_results[idx].text)
+            index_paragraphs.append(self.ranking_results[idx].doc_idx)
 
         examples = ExampleQA(self.query_idx, query, paragraphs)
         features = create_qa_features(examples=[examples], tokenizer=self.tokenizer, max_seq_length=self.max_sequence,
-                                      max_query_length=self.max_query)
+                                      max_query=self.max_query)
         feature = features[0]
         self.qa_model.eval()
         input_ids = torch.tensor([feature.input_ids], dtype=torch.long).to(self.device)
@@ -163,17 +166,17 @@ class ScaleNLP(object):
                                 attention_mask=input_mask.view(-1, input_mask.shape[2]),
                                 token_type_ids=segment_ids.view(-1, segment_ids.shape[2]))
             start, end = out[0], out[1]
-            start = start.view(self.qa_batchsize, self.number_paragraphs*self.max_sequence)
-            end = end.view(self.qa_batchsize, self.number_paragraphs*self.max_sequence)
+            start_logits = start.view(self.qa_batchsize, 3840)
+            end_logits = end.view(self.qa_batchsize, 3840)
 
-        starting_list = tensor_to_list(start[0])
-        ending_list = tensor_to_list(end[0])
+        starting_list = tensor_to_list(start_logits[0])
+        ending_list = tensor_to_list(end_logits[0])
 
         best_prediction = find_best_prediction(feature, starting_list, ending_list, self.top, self.max_sequence,
                                                 self.max_answer)
         for prediction in best_prediction:
             if prediction['doc_id'] != -1:
-                doc_idx = index_paragraphs[prediction['dox_id']]
+                doc_idx = index_paragraphs[prediction['doc_id']]
                 prediction["title"] = documents[doc_idx]["title"]
             else:
                 prediction["title"] = ""
