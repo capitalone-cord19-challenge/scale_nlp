@@ -140,7 +140,7 @@ class ScaleNLP(object):
 
         return search_results
 
-    def qa_processor(self, query, query_tokens, documents, ranking_results):
+    def qa_processor(self, query,documents):
 
         paragraphs = []
         index_paragraphs = []
