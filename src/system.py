@@ -87,7 +87,7 @@ class ScaleNLP(object):
         query_tokens = self.tokenizer.tokenize(query)
         if self.question_identification(query):
             search_results =  self.ranking_processor(query_tokens, documents)
-            qa_results =self.qa_processor(query_tokens, documents)
+            qa_results = self.qa_processor(query, documents)
             return search_results, qa_results
         return self.ranking_processor(query_tokens, documents)
 
